@@ -87,7 +87,7 @@ class MainActivity : BaseMirrorActivity<ActivityMainBinding>() {
                 Log.d(TAG, "onAudioFormat: " + audioInfo?.audioFormat)
             }
         }
-        airPlayServer = AirPlayServer("VisionPro", 7000, 49152, airplayDataConsumer)
+        airPlayServer = AirPlayServer(SERVER_NAME, 7000, 49152, airplayDataConsumer)
 
         Thread(object : Runnable {
             override fun run() {
@@ -175,5 +175,6 @@ class MainActivity : BaseMirrorActivity<ActivityMainBinding>() {
 
     companion object {
         private const val TAG = "MainActivity"
+        const val SERVER_NAME = "VisionPro"
     }
 }
