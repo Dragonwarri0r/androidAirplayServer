@@ -8,7 +8,6 @@ import android.os.HandlerThread;
 import android.util.Log;
 import android.view.Surface;
 
-
 import com.dragonwarrior.airplayserver.model.NALPacket;
 
 import java.nio.ByteBuffer;
@@ -23,8 +22,10 @@ public class VideoPlayer {
     private final MediaCodec.BufferInfo mBufferInfo = new MediaCodec.BufferInfo();
     private MediaCodec mDecoder = null;
     private final Surface mSurface;
-    private BlockingQueue<NALPacket> packets = new LinkedBlockingQueue<>(500);
+    // 增加队列容量以减少阻塞
+    private BlockingQueue<NALPacket> packets = new LinkedBlockingQueue<>(1000);
     private final HandlerThread mDecodeThread = new HandlerThread("VideoDecoder");
+    private volatile boolean isRunning = false;
 
     private OutputFormatChangedListener mOutputFormatChangedListener;
 
@@ -35,72 +36,112 @@ public class VideoPlayer {
     private final MediaCodec.Callback mDecoderCallback = new MediaCodec.Callback() {
         @Override
         public void onInputBufferAvailable(MediaCodec codec, int index) {
+            if (!isRunning) return;
+            
             try {
-                NALPacket packet = packets.take();
-                codec.getInputBuffer(index).put(packet.nalData);
-                mDecoder.queueInputBuffer(index, 0, packet.nalData.length, packet.pts, 0);
-            } catch (InterruptedException e) {
-                throw new IllegalStateException("Interrupted when is waiting");
-            } catch (IllegalStateException e) {
-                e.printStackTrace();
+                // 使用非阻塞方式获取数据包，避免在回调中阻塞
+                NALPacket packet = packets.poll();
+                if (packet != null) {
+                    ByteBuffer inputBuffer = codec.getInputBuffer(index);
+                    if (inputBuffer != null) {
+                        inputBuffer.clear();
+                        inputBuffer.put(packet.nalData);
+                        codec.queueInputBuffer(index, 0, packet.nalData.length, packet.pts, 0);
+                    }
+                } else {
+                    // 没有数据包时，发送空帧以保持流畅性
+                    codec.queueInputBuffer(index, 0, 0, 0, 0);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error in onInputBufferAvailable", e);
             }
         }
 
         @Override
         public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+            if (!isRunning) return;
+            
             try {
+                // 立即释放输出缓冲区以保持流畅性
                 codec.releaseOutputBuffer(index, true);
-            } catch (IllegalStateException e) {
-                e.printStackTrace();
+            } catch (Exception e) {
+                Log.e(TAG, "Error in onOutputBufferAvailable", e);
             }
         }
 
         @Override
         public void onError(MediaCodec codec, MediaCodec.CodecException e) {
-            Log.e(TAG, "Decode error", e);
+            Log.e(TAG, "MediaCodec error", e);
+            // 尝试恢复
+            try {
+                restartDecoder();
+            } catch (Exception restartError) {
+                Log.e(TAG, "Failed to restart decoder", restartError);
+            }
         }
 
         @Override
         public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
-            Log.d(TAG, "onOutputFormatChanged: width:" + format.getInteger("width") + " height:" + format.getInteger("height"));
             try {
+                int width = format.getInteger(MediaFormat.KEY_WIDTH);
+                int height = format.getInteger(MediaFormat.KEY_HEIGHT);
+                Log.i(TAG, "Output format changed: " + width + "x" + height);
+                
                 if (mOutputFormatChangedListener != null) {
-                    mOutputFormatChangedListener.onSizeChanged(format.getInteger("width"), format.getInteger("height"));
+                    mOutputFormatChangedListener.onSizeChanged(width, height);
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                Log.e(TAG, "Error in onOutputFormatChanged", e);
             }
         }
     };
 
-    public VideoPlayer(Surface surface, int width, int heigth) {
-//        this.mVideoWidth=width;
-//        this.mVideoHeight=heigth;
+    public VideoPlayer(Surface surface, int width, int height) {
         mSurface = surface;
+        // 可以在这里设置动态分辨率，但目前使用固定值
     }
 
     public void initDecoder() {
+        if (isRunning) return;
+        
         mDecodeThread.start();
+        isRunning = true;
+        
         try {
-            // 解码分辨率
-            Log.i(TAG, "initDecoder: mVideoWidth=" + mVideoWidth + "---mVideoHeight=" + mVideoHeight);
             mDecoder = MediaCodec.createDecoderByType(MIME_TYPE);
             MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, mVideoWidth, mVideoHeight);
+            
+            // 优化解码器配置
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 1024); // 1MB 输入缓冲区
+            format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1); // 低延迟模式
+            
             mDecoder.configure(format, mSurface, null, 0);
             mDecoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
             mDecoder.setCallback(mDecoderCallback, new Handler(mDecodeThread.getLooper()));
             mDecoder.start();
+            
+            Log.i(TAG, "Video decoder initialized: " + mVideoWidth + "x" + mVideoHeight);
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "Failed to initialize decoder", e);
+            isRunning = false;
         }
     }
 
     public void addPacker(NALPacket nalPacket) {
+        if (!isRunning || nalPacket == null || nalPacket.nalData == null) {
+            return;
+        }
+        
         try {
-            packets.put(nalPacket);
-        } catch (InterruptedException e) {
-            // 队列满了
-            Log.e(TAG, "run: put error:", e);
+            // 使用非阻塞方式添加数据包
+            boolean offered = packets.offer(nalPacket);
+            if (!offered) {
+                // 队列满了，丢弃最旧的包
+                packets.poll();
+                packets.offer(nalPacket);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error adding packet", e);
         }
     }
 
@@ -109,80 +150,85 @@ public class VideoPlayer {
     }
 
     public void stopVideoPlay() {
+        isRunning = false;
+        
         try {
-            mDecoder.stop();
+            if (mDecoder != null) {
+                mDecoder.stop();
+                mDecoder.release();
+                mDecoder = null;
+            }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "Error stopping decoder", e);
         }
+        
         try {
-            mDecoder.release();
+            if (mDecodeThread != null) {
+                mDecodeThread.quitSafely();
+            }
         } catch (Exception e) {
-            e.printStackTrace();
+            Log.e(TAG, "Error stopping decode thread", e);
         }
-        mDecodeThread.quit();
+        
+        packets.clear();
+    }
+    
+    /**
+     * 重启解码器（用于错误恢复）
+     */
+    private void restartDecoder() {
+        Log.i(TAG, "Restarting video decoder");
+        
+        try {
+            if (mDecoder != null) {
+                mDecoder.stop();
+                mDecoder.release();
+            }
+            
+            // 重新创建解码器
+            mDecoder = MediaCodec.createDecoderByType(MIME_TYPE);
+            MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, mVideoWidth, mVideoHeight);
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 1024);
+            format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+            
+            mDecoder.configure(format, mSurface, null, 0);
+            mDecoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT);
+            mDecoder.setCallback(mDecoderCallback, new Handler(mDecodeThread.getLooper()));
+            mDecoder.start();
+            
+            Log.i(TAG, "Video decoder restarted successfully");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to restart decoder", e);
+            isRunning = false;
+        }
+    }
+    
+    /**
+     * 更新视频格式（分辨率变化时调用）
+     */
+    public void updateVideoFormat(int width, int height) {
+        Log.i(TAG, "Video format update requested: " + width + "x" + height);
+        
+        // MediaCodec 通常能自动处理合理的分辨率变化
+        // 如果需要重新创建解码器，可以在这里实现
+        // 但这会导致短暂的视频中断
+    }
+
+    /**
+     * 获取当前队列大小（用于监控性能）
+     */
+    public int getQueueSize() {
+        return packets.size();
+    }
+    
+    /**
+     * 清空队列（用于快速恢复）
+     */
+    public void clearQueue() {
         packets.clear();
     }
 
-    private void doDecode(NALPacket nalPacket) throws IllegalStateException {
-        final long timeoutUsec = 10000;
-//        Log.i(TAG, "doDecode: start");
-        if (nalPacket.nalData == null) {
-            Log.w(TAG, "doDecode: data is null return");
-            return;
-        }
-        //获取MediaCodec的输入流
-        ByteBuffer[] decoderInputBuffers = mDecoder.getInputBuffers();
-        int inputBufIndex = -10000;
-        try {
-            inputBufIndex = mDecoder.dequeueInputBuffer(timeoutUsec);//设置解码等待时间，0为不等待，-1为一直等待，其余为时间单位
-        } catch (Exception e) {
-            Log.e(TAG, "dequeueInputBuffer error", e);
-        }
-        if (inputBufIndex >= 0) {
-            ByteBuffer inputBuf = decoderInputBuffers[inputBufIndex];
-            inputBuf.put(nalPacket.nalData);
-            // 输入流入队列
-            mDecoder.queueInputBuffer(inputBufIndex, 0, nalPacket.nalData.length, nalPacket.pts, 0);
-        } else {
-            Log.d(TAG, "dequeueInputBuffer failed");
-        }
-        decode(timeoutUsec);
-//        workHandler.post(new Runnable() {
-//            @Override
-//            public void run() {
-//                decode(TIMEOUT_USEC);
-//            }
-//        });
-//        Log.i(TAG, "doDecode: end");
-    }
-
-    @SuppressLint("WrongConstant")
-    private void decode(long timeoutUsec) {
-        int outputBufferIndex = -10000;
-        try {
-            outputBufferIndex = mDecoder.dequeueOutputBuffer(mBufferInfo, timeoutUsec);
-        } catch (Exception e) {
-            Log.e(TAG, "doDecode: dequeueOutputBuffer error:" + e.getMessage());
-        }
-        if (outputBufferIndex >= 0) {
-            mDecoder.releaseOutputBuffer(outputBufferIndex, true);
-//            try {
-//                Thread.sleep(50);
-//            } catch (InterruptedException ie) {
-//                ie.printStackTrace();
-//            }
-        } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-//            try {
-//                Thread.sleep(10);
-//            } catch (InterruptedException ie) {
-//                ie.printStackTrace();
-//            }
-        } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
-            // not important for us, since we're using Surface
-        }
-    }
-
     public interface OutputFormatChangedListener {
-        public void onSizeChanged(int width, int height);
+        void onSizeChanged(int width, int height);
     }
 }

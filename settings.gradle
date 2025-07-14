@@ -1,2 +1,4 @@
 rootProject.name = "AndroidAirplayServer"
 include ':app'
+include ':airplay-lib'
+include ':airplay-server'
