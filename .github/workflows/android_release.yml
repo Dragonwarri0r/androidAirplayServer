@@ -8,12 +8,11 @@ on:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: set up JDK 17
+    - name: Set up JDK 17
       uses: actions/setup-java@v4
       with:
         java-version: '17'
@@ -24,3 +23,23 @@ jobs:
       run: chmod +x gradlew
     - name: Build with Gradle
       run: ./gradlew build
+
+    - name: Upload APK to Release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' # 仅在推送到 main 分支时执行
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-release-apk
+        path: app/build/outputs/apk/release/*.apk # 假设你的 APK 在这个路径下
+        retention-days: 30 # 产物保留天数，可根据需要调整
+
+    - name: Create Release and Upload APK
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ github.run_number }} # 自动生成版本号，例如 v1, v2
+        name: Release v${{ github.run_number }}
+        draft: false
+        prerelease: false
+        files: app/build/outputs/apk/release/*.apk # 上传 APK 文件
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
