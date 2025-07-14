@@ -2,3 +2,5 @@
 /.idea
 /.gradle
 local.properties
+out
+build

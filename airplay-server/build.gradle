@@ -1,0 +1,22 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+dependencies {
+    implementation project(':airplay-lib')
+    
+    implementation ('io.netty:netty-all:4.1.77.Final'){
+        exclude group: 'org.slf4j:slf4j-api'
+    }
+    implementation 'org.slf4j:slf4j-simple:1.7.25'
+    implementation 'com.googlecode.plist:dd-plist:1.23'
+    implementation 'io.lindstrom:m3u8-parser:0.24'
+    
+    // 测试依赖
+    testImplementation 'junit:junit:4.13.2'
+} 

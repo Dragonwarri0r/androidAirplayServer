@@ -1,0 +1,18 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+dependencies {
+    implementation 'org.jmdns:jmdns:3.5.7'
+    implementation 'com.googlecode.plist:dd-plist:1.23'
+    implementation 'net.i2p.crypto:eddsa:0.3.0'
+    implementation 'org.whispersystems:curve25519-java:0.5.0'
+    
+    // 测试依赖
+    testImplementation 'junit:junit:4.13.2'
+} 
