@@ -28,9 +28,9 @@ jobs:
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' # 仅在推送到 main 分支时执行
       uses: actions/upload-artifact@v4
       with:
-        name: app-release-apk
-        path: app/build/outputs/apk/release/*.apk # 假设你的 APK 在这个路径下
-        retention-days: 30 # 产物保留天数，可根据需要调整
+        name: app-debug-apk
+        path: app/build/outputs/apk/debug/*.apk # 假设你的 APK 在这个路径下
+        files: app/build/outputs/apk/debug/*.apk
 
     - name: Create Release and Upload APK
       if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -40,6 +40,6 @@ jobs:
         name: Release v${{ github.run_number }}
         draft: false
         prerelease: false
-        files: app/build/outputs/apk/release/*.apk # 上传 APK 文件
+        files: app/build/outputs/apk/debug/*.apk # 上传 APK 文件
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
